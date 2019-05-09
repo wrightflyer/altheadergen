@@ -61,7 +61,6 @@ parser.add_argument("-i", "--input", dest='in_fname', help="name of .XML file to
 parser.add_argument("-o", "--output", dest='out_name', help="Name of output file (overides default)")
 parser.add_argument("-q", "--quiet", dest='quiet', action="store_true", help="Don't print to console")
 parser.add_argument("-v", "--verbose", dest='verbose', action="store_true", help="Show developer info")
-parser.add_argument("-a", "--anonymous", dest='anon', action="store_true", help="Use anonymous structs (GCC only)")
 parser.add_argument("-m", "--multiple", dest='multiple', action="store_true", help="process multiple files")
 
 # my one argument with argparse is that if you run the app without args it doesn't show help info, so
@@ -366,22 +365,19 @@ if len(flist) >= 1:
                             hdr.write("\t\t\tunsigned int _" + b.name + ":1; // b" + str(b.bitpos) + " " + b.caption + "\n")
 
                             bitpos += 1  # b.numbits
-                    if args.anon:
-                        hdr.write("\t\t};\n\t} _" + name + ";\n")
+                    if uint_sz == 8:
+                        hdr.write("\t\t} bit;\n\t} _" + name + ";\n")
                     else:
-                        if uint_sz == 8:
-                            hdr.write("\t\t} bit;\n\t} _" + name + ";\n")
+                        # just assume/handle uint16_t for now..
+                        hdr.write("\t\t} bit;\n")
+                        hdr.write("\t\tstruct {\n")
+                        hdr.write("\t\t\tuint8_t low;\n")
+                        if regbits == 16:
+                            hdr.write("\t\t\tuint8_t high;\n")
                         else:
-                            # just assume/handle uint16_t for now..
-                            hdr.write("\t\t} bit;\n")
-                            hdr.write("\t\tstruct {\n")
-                            hdr.write("\t\t\tuint8_t low;\n")
-                            if regbits == 16:
-                                hdr.write("\t\t\tuint8_t high;\n")
-                            else:
-                                hdr.write("\t\t\tunsigned int high:" + str(regbits - 8) + ";\n")
-                            hdr.write("\t\t} halves;\n")
-                            hdr.write("\t} _" + name + ";\n")
+                            hdr.write("\t\t\tunsigned int high:" + str(regbits - 8) + ";\n")
+                        hdr.write("\t\t} halves;\n")
+                        hdr.write("\t} _" + name + ";\n")
 
                     # following adds 0 for size:1 entries but is mainly here for multi-byte entries so that addr can be
                     # stepped on for uint16_t registers and so on
