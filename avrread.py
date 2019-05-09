@@ -39,6 +39,27 @@ import argparse
 import xml.etree.ElementTree as et
 from collections import namedtuple
 
+doxy_template = '''
+/**
+ * @mainpage	The Atmel ##
+ *
+ * @details 	This is a complete definition of the layout of the ##
+ *
+ * @file
+ * @brief      	These are the register/bit definitions:
+ *
+ * @copyright   Free for anyone to use
+ * @author      Cliff Lawson
+ */
+'''
+
+doxy_brief1 = "* @brief"
+doxy_brief2 = ""
+doxy_member = "*<"
+doxy_whole = " /**< whole reg */"
+doxy_bits = " /**< the bits */"
+doxy_split = " /**< Split as two bytes */"
+doxy_part_template = " /**< Complete register layout for ## */"
 
 # found this on StackOverflow - it simply returns the lowest bit that is set in a byte
 def lowestSet(int_type):
@@ -56,12 +77,13 @@ def lowestSet(int_type):
 #	print(n, sys.argv[n])
 
 # I like argparse - it makes for very clean command line interfaces
-parser = argparse.ArgumentParser(description='Read Atmel XML (version 1.3)')
+parser = argparse.ArgumentParser(description='Read Atmel XML (version 1.4)')
 parser.add_argument("-i", "--input", dest='in_fname', help="name of .XML file to read as input")
 parser.add_argument("-o", "--output", dest='out_name', help="Name of output file (overides default)")
 parser.add_argument("-q", "--quiet", dest='quiet', action="store_true", help="Don't print to console")
 parser.add_argument("-v", "--verbose", dest='verbose', action="store_true", help="Show developer info")
 parser.add_argument("-m", "--multiple", dest='multiple', action="store_true", help="process multiple files")
+parser.add_argument("-d", "--doxygen", dest='doxy', action="store_true", help="generate Doxygen style comments")
 
 # my one argument with argparse is that if you run the app without args it doesn't show help info, so
 # this will achieve that...
@@ -71,6 +93,15 @@ if len(sys.argv) == 1:
 
 # this actually runs the argument parser on sys.argv
 args = parser.parse_args()
+
+if args.doxy is not True:
+    doxy_template = ""
+    doxy_brief1 = "================"
+    doxy_brief2 = " ================"
+    doxy_member = ""
+    doxy_whole = ""
+    doxy_bits = ""
+    doxy_split = ""
 
 flist = []
 
@@ -84,6 +115,14 @@ elif args.multiple is True and args.in_fname is None:
 if len(flist) >= 1:
     for fname in flist:
 
+        # split partname from input .atdf filename
+        partname = os.path.splitext(fname)[0]
+
+        if args.doxy:
+            doxy_partname = doxy_part_template.replace("##", partname)
+        else:
+            doxy_partname = ""
+
         # The following creates an empty list. As the XML is parsed this will be appened()'d too to build a complete
         # picture of the AVR layout as a list of dictionaries
         mainlist = []
@@ -93,7 +132,7 @@ if len(flist) >= 1:
             # the user has the opportunity to use -o to set an output filename but if they haven't used that this
             # takes the input .atdf/.xml filename and replaces the extension with ".h" to create the output name
             if args.out_name is None:
-                out_name = os.path.splitext(fname)[0]+".h"
+                out_name = partname + ".h"
 
             if args.multiple is True or args.quiet is not True:
                 print("Creating:", out_name)
@@ -277,15 +316,86 @@ if len(flist) >= 1:
             # this is just standard Python file IO - open xxx.h as a writable text file..
             hdr = open(out_name, "wt")
 
-            # the preamble is a fixed text so write that now...
-            hdr.write("#include <stdint.h>\n\ntypedef struct {\n")
+            hdr.write("#include <stdint.h>\n\n")
+            doxy_text = doxy_template.replace("##", partname)
 
+            # the preamble is a fixed text so write that now...
+            if args.doxy is True:
+                hdr.write(doxy_text + "\n\n")
+
+            while regidx < len(mainlist):
+                main_addr = mainlist[regidx]['addr']
+                byts = int(mainlist[regidx]['size'])
+                uint_sz = byts * 8
+                main_mask = int(mainlist[regidx]['main_mask'])
+                regbits = bin(main_mask).count('1')
+                name = mainlist[regidx]['name']  # .lower()
+                caption = mainlist[regidx]['caption']
+                whole_reg = len(mainlist[regidx]['bits']) == 0
+                hdr.write("/*" + doxy_brief1 + " " + name + " - " + caption + " @ " + str(hex(addr)).upper().replace('X','x') + doxy_brief2 + " */\n")
+                if regbits == 8 or regbits == 16:
+                    hdr.write("typedef union {\n\tuint" + str(uint_sz) + "_t reg;" + doxy_whole + "\n\tstruct {\n")
+                else:
+                    hdr.write("typedef union {\n\tunsigned int reg:" + str(regbits) + "; /*" + doxy_member + " (@ " + str(hex(addr)) + ") " + caption + " (range: 0.." + str((1 << regbits) - 1) + ") */\n\tstruct {\n")
+
+                # now for a whole register just write bN fields for the number of bits there are
+                if whole_reg:
+                    for b in range(0,  bin(main_mask).count('1')):
+                        hdr.write("\t\tunsigned int b" + str(b) + ":1;\n")
+                else:
+                    # So this is the complicated bit when there are named bits defined
+                    bitpos = 0
+                    for b in mainlist[regidx]['bits']:
+
+                        # We have tuples like (2, 5, 'FOO') which means FOO is at bit position 2 and spans 5 bits but
+                        # some of the structs have "gaps" that are unused and we need to fill these with padding
+                        # the gap is padded using the following...
+                        if b.bitpos > bitpos:
+                            nskip = b.bitpos - bitpos
+                            hdr.write("\t\tunsigned int       :" + str(b.bitpos - bitpos) + "; /*" + doxy_member + " b" + str(bitpos))
+                            if nskip > 1:
+                                hdr.write("...b" + str(b.bitpos - 1))
+                            hdr.write(" - unused */\n")
+
+                            # and step bitpos on to the bit position of the enrty we're about to write
+                            bitpos = b.bitpos
+
+                        # then the actual named "FOO:5" entry is created by this...
+                        hdr.write("\t\tunsigned int _" + b.name + ":1; /*" + doxy_member + " b" + str(b.bitpos) + " " + b.caption + " */\n")
+
+                        bitpos += 1  # b.numbits
+                if uint_sz == 8:
+                    # hdr.write("\t} bit;" + doxy_bits + "\n} " + name + "_t; /*" + doxy_member + " (@ " + str(hex(addr)) + ") " + caption + " */\n\n")
+                    hdr.write("\t} bit;" + doxy_bits + "\n} " + name + "_t;\n\n")
+                else:
+                    # just assume/handle uint16_t for now..
+                    hdr.write("\t} bit;" + doxy_bits + "\n")
+                    hdr.write("\tstruct {\n")
+                    hdr.write("\t\tuint8_t low;\n")
+                    if regbits == 16:
+                        hdr.write("\t\tuint8_t high;\n")
+                    else:
+                        hdr.write("\t\tunsigned int high:" + str(regbits - 8) + ";\n")
+                    hdr.write("\t} halves;" + doxy_split + "\n")
+                    #hdr.write("} " + name + "_t; /*"  + " (@ " + str(hex(addr)) + ") " + caption + " */\n\n")
+                    hdr.write("} " + name + "_t;\n\n")
+
+                # now step the mainlist[] index on to the next entry
+                regidx += 1
+                addr += byts - 1
+                addr += 1
+
+            regidx = 0
+
+            addr = int(sfr_start, 0)
+
+            hdr.write("\ntypedef struct {\n")
             # now we build a struct that will span sfr_start to sfr_start+sfr_size (remember int(x,0) converts "0xNN" to int)
             # Oh and if you are wondering why this is a while() loop and not a for() loop it's because in Python (I found
             # out the hard way!) you cannot use "for x in range(start,end)" and the modify x within the loop to skip some values
             # the range() builds a list at the very start and x will be set to every member in that list for each iteration
             # of the loop - updates to the iteration variable are over-written!
-            while addr < (int(sfr_start, 0) + int(sfr_size,0)):
+            while addr < (int(sfr_start, 0) + int(sfr_size, 0)):
 
                 # now for each address in the SFR range we see if the next mainlist[] entry has something for it
                 # first pull the mainlist entries into more readable varaible names:
@@ -297,87 +407,10 @@ if len(flist) >= 1:
                 name = mainlist[regidx]['name']  # .lower()
                 caption = mainlist[regidx]['caption']
                 if main_addr == addr:
-
-                    # if here then this address has an entry in mainlist[] so now the question is "is it a whole register or
-                    # is it a group of bits?". Whole registers are things like PORTB, ADC, OCR0 and so on, while registers with
-                    # (named) bits are things like UCSRA, TWCR and so on. For a whole register with anonymous bits then
-                    # just generate something like:
-                    #
-                    # union {
-                    # 	uint8_t reg; // (@ 0x32) Port D Data Register
-                    # 	struct {
-                    # 		unsigned int b0:1;
-                    # 		unsigned int b1:1;
-                    # 		unsigned int b2:1;
-                    # 		unsigned int b3:1;
-                    # 		unsigned int b4:1;
-                    # 		unsigned int b5:1;
-                    # 		unsigned int b6:1;
-                    # 		unsigned int b7:1;
-                    # 	} bit;
-                    # } _PORTD;
-                    #
-                    # while for a register with named bits generate something like:
-                    #
-                    # union {
-                    #     uint8_t reg; // (@ 0x2e) SPI Status Register
-                    #     struct {
-                    #         int _SPI2X:1; // b0 Double SPI Speed Bit
-                    #         int :5; // b1 - unused
-                    #         int _WCOL:1; // b6 Write Collision Flag
-                    #         int _SPIF:1; // b7 SPI Interrupt Flag
-                    #     } bit;
-                    # } _SPSR;
-                    #
-                    #
-                    # If it is a whole register then it might be more than one byte so need to decide to uint8_t, uint16_t
-                    # and so on (I'm hoping they haven't got one defined as 'size':3 because that would lead to uint24_t
-                    # as I just multiply by 8!!)
-                    whole_reg = len(mainlist[regidx]['bits']) == 0
-                    if regbits == 8 or regbits == 16:
-                        hdr.write("\tunion {\n\t\tuint" + str(uint_sz) + "_t reg; // (@ " + str(hex(addr)) + ") " + caption + "\n\t\tstruct {\n")
-                    else:
-                        hdr.write("\tunion {\n\t\tunsigned int reg:" + str(regbits) + "; // (@ " + str(hex(addr)) + ") " + caption + " (range: 0.." + str((1 << regbits) - 1) + ") \n\t\tstruct {\n")
-
-                    # now for a whole register just write bN fields for the number of bits there are
-                    if whole_reg:
-                        for b in range(0,  bin(main_mask).count('1')):
-                            hdr.write("\t\t\tunsigned int b" + str(b) + ":1;\n")
-                    else:
-                        # So this is the complicated bit when there are named bits defined
-                        bitpos = 0
-                        for b in mainlist[regidx]['bits']:
-
-                            # We have tuples like (2, 5, 'FOO') which means FOO is at bit position 2 and spans 5 bits but
-                            # some of the structs have "gaps" that are unused and we need to fill these with padding
-                            # the gap is padded using the following...
-                            if b.bitpos > bitpos:
-                                nskip = b.bitpos - bitpos
-                                hdr.write("\t\t\tunsigned int       :" + str(b.bitpos - bitpos) + "; // b" + str(bitpos))
-                                if nskip > 1:
-                                    hdr.write("...b" + str(b.bitpos - 1))
-                                hdr.write(" - unused\n")
-
-                                # and step bitpos on to the bit position of the enrty we're about to write
-                                bitpos = b.bitpos
-
-                            # then the actual named "FOO:5" entry is created by this...
-                            hdr.write("\t\t\tunsigned int _" + b.name + ":1; // b" + str(b.bitpos) + " " + b.caption + "\n")
-
-                            bitpos += 1  # b.numbits
-                    if uint_sz == 8:
-                        hdr.write("\t\t} bit;\n\t} _" + name + ";\n")
-                    else:
-                        # just assume/handle uint16_t for now..
-                        hdr.write("\t\t} bit;\n")
-                        hdr.write("\t\tstruct {\n")
-                        hdr.write("\t\t\tuint8_t low;\n")
-                        if regbits == 16:
-                            hdr.write("\t\t\tuint8_t high;\n")
-                        else:
-                            hdr.write("\t\t\tunsigned int high:" + str(regbits - 8) + ";\n")
-                        hdr.write("\t\t} halves;\n")
-                        hdr.write("\t} _" + name + ";\n")
+                    tab2 = ""
+                    if len(name) < 6:
+                        tab2 = "\t"
+                    hdr.write("\t" + name + "_t\t" + tab2 + "_" + name + "; /*" + doxy_member + " (@ " + str(hex(addr)) + ") " + caption + " */\n")
 
                     # following adds 0 for size:1 entries but is mainly here for multi-byte entries so that addr can be
                     # stepped on for uint16_t registers and so on
@@ -393,13 +426,17 @@ if len(flist) >= 1:
                         regidx = 1
                 else:
                     # this just writes an unused0xNN entry for each byte that has nothing in mainlist[]
-                    hdr.write("\tuint8_t unused" + str(hex(addr)) + ";\n")
+                    hdr.write("\tuint8_t\t\tunused" + str(hex(addr)) + ";\n")
                 addr += 1
 
             # then just finish with the closing part of the struct{} definition and we're all done! :-)
             # BTW I wanted to call the whole thing "AVR" not "SFRS" but the compiler alredy defines "AVR"
-            hdr.write("} SFRS_t;\n\n#define USE_SFRS() volatile SFRS_t * const pSFR = (SFRS_t *)" + sfr_start + "\n\n")
+            hdr.write("} " + partname + ";" + doxy_partname + "\n\n")
+            hdr.write("/** This must be used in your file to use these definitions */\n")
+            hdr.write("#define USE_SFRS() volatile " + partname + " * const pSFR = (" + partname + " *)" + sfr_start + "\n\n")
 
+            if args.doxy is True:
+                hdr.write("#ifndef __DOXYGEN__\n")
             # now to make some easier to type/read symbols that actually hide some of that implementation
             for entry in mainlist:
                 name = entry['name']
@@ -427,6 +464,8 @@ if len(flist) >= 1:
                         bitname = bit.name.lower()
                         hdr.write("#define " + bitname + "_bp " + str(bit.bitpos) + "\n")
                 hdr.write("\n")
+            if args.doxy is True:
+                hdr.write("#endif /*__DOXYGEN__*/\n")
             hdr.close()
         else:
             print("No valid input file")
