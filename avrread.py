@@ -62,7 +62,6 @@ parser.add_argument("-o", "--output", dest='out_name', help="Name of output file
 parser.add_argument("-q", "--quiet", dest='quiet', action="store_true", help="Don't print to console")
 parser.add_argument("-v", "--verbose", dest='verbose', action="store_true", help="Show developer info")
 parser.add_argument("-a", "--anonymous", dest='anon', action="store_true", help="Use anonymous structs (GCC only)")
-parser.add_argument("-n", "--no_union", dest='nounion', action="store_true", help="No unions - just one entry per register")
 parser.add_argument("-m", "--multiple", dest='multiple', action="store_true", help="process multiple files")
 
 # my one argument with argparse is that if you run the app without args it doesn't show help info, so
@@ -336,22 +335,13 @@ if len(flist) >= 1:
                     # and so on (I'm hoping they haven't got one defined as 'size':3 because that would lead to uint24_t
                     # as I just multiply by 8!!)
                     whole_reg = len(mainlist[regidx]['bits']) == 0
-                    if args.nounion:
-                        if whole_reg:
-                            if regbits == 8 or regbits == 16:
-                                hdr.write("\tuint" + str(uint_sz) + "_t " + name + "; // (@ " + str(hex(addr)) + ") " + caption)
-                            else:
-                                hdr.write("\tunsigned int " + name + ":" + str(regbits) + "; // (@ " + str(hex(addr)) + ") " + caption)
-                        else:
-                            hdr.write("\tstruct { // (@ " + str(hex(addr)) + ") " + caption + "\n")
+                    if regbits == 8 or regbits == 16:
+                        hdr.write("\tunion {\n\t\tuint" + str(uint_sz) + "_t reg; // (@ " + str(hex(addr)) + ") " + caption + "\n\t\tstruct {\n")
                     else:
-                        if regbits == 8 or regbits == 16:
-                            hdr.write("\tunion {\n\t\tuint" + str(uint_sz) + "_t reg; // (@ " + str(hex(addr)) + ") " + caption + "\n\t\tstruct {\n")
-                        else:
-                            hdr.write("\tunion {\n\t\tunsigned int reg:" + str(regbits) + "; // (@ " + str(hex(addr)) + ") " + caption + " (range: 0.." + str((1 << regbits) - 1) + ") \n\t\tstruct {\n")
+                        hdr.write("\tunion {\n\t\tunsigned int reg:" + str(regbits) + "; // (@ " + str(hex(addr)) + ") " + caption + " (range: 0.." + str((1 << regbits) - 1) + ") \n\t\tstruct {\n")
 
                     # now for a whole register just write bN fields for the number of bits there are
-                    if whole_reg and not args.nounion:
+                    if whole_reg:
                         for b in range(0,  bin(main_mask).count('1')):
                             hdr.write("\t\t\tunsigned int b" + str(b) + ":1;\n")
                     else:
@@ -376,28 +366,22 @@ if len(flist) >= 1:
                             hdr.write("\t\t\tunsigned int _" + b.name + ":1; // b" + str(b.bitpos) + " " + b.caption + "\n")
 
                             bitpos += 1  # b.numbits
-                    if args.nounion:
-                        if not whole_reg:
-                            hdr.write("\t} " + name + ";\n")
-                        else:
-                            hdr.write("\n")
+                    if args.anon:
+                        hdr.write("\t\t};\n\t} _" + name + ";\n")
                     else:
-                        if args.anon:
-                            hdr.write("\t\t};\n\t} _" + name + ";\n")
+                        if uint_sz == 8:
+                            hdr.write("\t\t} bit;\n\t} _" + name + ";\n")
                         else:
-                            if uint_sz == 8:
-                                hdr.write("\t\t} bit;\n\t} _" + name + ";\n")
+                            # just assume/handle uint16_t for now..
+                            hdr.write("\t\t} bit;\n")
+                            hdr.write("\t\tstruct {\n")
+                            hdr.write("\t\t\tuint8_t low;\n")
+                            if regbits == 16:
+                                hdr.write("\t\t\tuint8_t high;\n")
                             else:
-                                # just assume/handle uint16_t for now..
-                                hdr.write("\t\t} bit;\n")
-                                hdr.write("\t\tstruct {\n")
-                                hdr.write("\t\t\tuint8_t low;\n")
-                                if regbits == 16:
-                                    hdr.write("\t\t\tuint8_t high;\n")
-                                else:
-                                    hdr.write("\t\t\tunsigned int high:" + str(regbits - 8) + ";\n")
-                                hdr.write("\t\t} halves;\n")
-                                hdr.write("\t} _" + name + ";\n")
+                                hdr.write("\t\t\tunsigned int high:" + str(regbits - 8) + ";\n")
+                            hdr.write("\t\t} halves;\n")
+                            hdr.write("\t} _" + name + ";\n")
 
                     # following adds 0 for size:1 entries but is mainly here for multi-byte entries so that addr can be
                     # stepped on for uint16_t registers and so on
