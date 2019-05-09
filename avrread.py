@@ -84,6 +84,7 @@ parser.add_argument("-q", "--quiet", dest='quiet', action="store_true", help="Do
 parser.add_argument("-v", "--verbose", dest='verbose', action="store_true", help="Show developer info")
 parser.add_argument("-m", "--multiple", dest='multiple', action="store_true", help="process multiple files")
 parser.add_argument("-d", "--doxygen", dest='doxy', action="store_true", help="generate Doxygen style comments")
+parser.add_argument("-s", "--symbols", dest='symbols', action="store_true", help="Generate a list of acronym symbols")
 
 # my one argument with argparse is that if you run the app without args it doesn't show help info, so
 # this will achieve that...
@@ -312,6 +313,26 @@ if len(flist) >= 1:
             # remember the "MAPPED_IO" which was the first thing taken from the XML - this is where we use the sfr_start/size
             # we pulled from it at that time
             addr = int(sfr_start, 0)
+
+            # new options here -s/--symbols which uses the parsed list to generate an alpha sorted list of
+            # acronyms/symbols. If we do this we don't want to generate the header so will bail out if we go
+            # for this...
+            if args.symbols:
+                outsyms = []
+                for entry in mainlist:
+                    outsyms.append(entry['name'] + " = " + entry['caption'] + "\n")
+                    if len(entry['bits']) != 0:
+                        for bit in entry['bits']:
+                            bitname = bit.name
+                            suffix = ""
+                            outsyms.append(bitname + " : bit within " + entry['name'] + " = " + bit.caption + "\n")
+                outsyms.sort()
+                out_name = out_name.replace(".h", ".sym")
+                sym = open(out_name, "wt")
+                for symstr in outsyms:
+                    sym.write(symstr)
+                sym.close()
+                sys.exit(0)
 
             # this is just standard Python file IO - open xxx.h as a writable text file..
             hdr = open(out_name, "wt")
